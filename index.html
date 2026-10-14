@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bill Tracker</title>
+<meta name="description" content="Keep track of monthly bills, paychecks, savings goals and debts.">
+<meta name="theme-color" content="#5B3FA8">
+<meta name="robots" content="noindex">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<script>
+  // Apply the saved theme before anything draws, so dark mode doesn't flash.
+  (function () {
+    var t = "auto";
+    try { t = localStorage.getItem("bt_theme") || "auto"; } catch (e) {}
+    var dark = t === "dark" || (t === "auto" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
+    document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+  })();
+</script>
+</head>
+<body>
+<div id="root"><div class="auth"><div class="authcard"><p>Loading…</p></div></div></div>
+<div id="sheetroot"></div>
+<div id="toastroot" aria-live="polite"></div>
+<noscript><p style="padding:24px">Bill Tracker needs JavaScript turned on.</p></noscript>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
