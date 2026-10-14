@@ -386,8 +386,22 @@
       }
     } finally { flushing = false; }
   }
+  // If the app was set up while sync was off (or offline), the passcode and
+  // recovery "doors" were only saved on this device. Upload those same locked
+  // copies once sync is available, so other devices can find the data.
+  async function ensureDoors() {
+    if (!SYNC_URL || !DB || !PID) return;
+    const meta = readMeta() || {};
+    const tag = SYNC_URL + "|" + meta.pid + "|" + (meta.rid || "");
+    if (LS.get("bt_doors_up") === tag) return;
+    if (meta.pid !== PID || (DB.keyring.pid && DB.keyring.pid !== PID)) return;
+    const pd = readJSON("bt_door"), rd = readJSON("bt_rdoor");
+    if (pd) await putDoor(meta.pid, pd);
+    if (rd && meta.rid && (!DB.keyring.rid || DB.keyring.rid === meta.rid)) await putDoor(meta.rid, rd);
+    LS.set("bt_doors_up", tag);
+  }
   function clearDevice() {
-    ["bt_meta", "bt_data", "bt_sync", "bt_session", "bt_door", "bt_rdoor", "bt_doorq"].forEach((k) => LS.del(k));
+    ["bt_meta", "bt_data", "bt_sync", "bt_session", "bt_door", "bt_rdoor", "bt_doorq", "bt_doors_up"].forEach((k) => LS.del(k));
     SS.del("bt_session");
   }
   // "Email it to me": on a phone, open the mail app (Gmail on Android); on a PC, open Gmail in the browser
@@ -476,6 +490,7 @@
         sync.dirty = false;
         sync.last = Date.now();
         done = true;
+        try { await ensureDoors(); } catch (e) { console.warn("[bill-tracker] couldn't upload unlock keys yet", e); }
         await saveLocal();
         if (changed) { rebuildIndex(); softRender(); }
       }

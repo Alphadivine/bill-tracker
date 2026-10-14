@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10 — Sync fixes (v1.0.1)
+
+- Fix: if the app was set up while sync was off (for example, when an older blank config.js was still cached), the passcode and recovery code were only saved on that device, so other devices couldn't find the data. They now upload automatically the first time sync works.
+- Fix: the app now checks for new versions of its files every time it opens, instead of keeping a cached copy for up to 10 minutes. A new config.js or app update shows up on the next reload.
+
 ## 2026-10 — First release (v1.0.0)
 
 - Home with "safe to spend until payday", monthly totals, overdue / due-soon / price-change banners, and one-tap paid toggles with Undo.
@@ -16,3 +21,4 @@
 - Sync between phone and PC through a Cloudflare Worker that only stores encrypted data; changes on both devices merge.
 - Light, dark and match-device themes; works on phone and desktop; installable and opens offline.
 - Export to CSV, backup / restore, change passcode, erase everything.
+- config.js ships with the live sync Worker address, so uploads never need a manual edit.

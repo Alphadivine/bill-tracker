@@ -39,4 +39,4 @@ The sync Worker lives in the `Worker` folder of the bundle, not on GitHub Pages.
 
 ---
 
-Last updated: October 2026 (v1.0.0)
+Last updated: October 2026 (v1.0.1)
