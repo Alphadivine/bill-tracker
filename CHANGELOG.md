@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10 — Multiple categories and a category filter (v1.1.0)
+
+- Bills can be listed under more than one category. The first is the main category (Insights totals count the bill there only, so they still add up to 100%); "Also show under" adds extra ones, e.g. a house loan under Housing and Debt.
+- Quick add: Mortgage and Car payment now also show under Debt.
+- Category filter on Home and Calendar: tap a category to see only those bills. The month totals follow the filter; "safe to spend" and alerts still cover everything. The choice is remembered on each device.
+- The bill list, bill details and spreadsheet export show every category a bill is in.
+
 ## 2026-10 — Sync fixes (v1.0.1)
 
 - Fix: if the app was set up while sync was off (for example, when an older blank config.js was still cached), the passcode and recovery code were only saved on that device, so other devices couldn't find the data. They now upload automatically the first time sync works.

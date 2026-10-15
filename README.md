@@ -11,6 +11,7 @@ A personal app for keeping track of monthly bills and budgeting around your payc
 - **Calendar** shows due dates and paydays for the month. Pick a day to see its bills, notes and a link to the pay site.
 - **Insights** shows where your money goes by category, your monthly trend, every **subscription** with its yearly cost, **price changes** when a bill goes up, and a **year-end summary** you can download.
 - **Goals** tracks savings goals (a set amount per paycheck, with an on-track date) and debts (the balance drops when you mark the linked bill paid). A **what-if** shows how much sooner you'd be debt-free paying a little extra.
+- **Categories and filter**: a bill can sit in more than one category (like a house loan under Housing and Debt). Tap a category at the top of Home or Calendar to see just those bills.
 - **Quick add** fills in common bills like rent, electric, phone and car insurance in one tap.
 - **Bill notes and pay links** keep late-fee reminders and the website to pay at with each bill.
 - **Weekends and bank holidays** are handled for you. Each bill can move to the next business day (the default, like autopay), the business day before, or keep its date. Paydays on a weekend or holiday move to the business day before (changeable in Settings). Moved dates say why, and the calendar marks the 11 US bank holidays.
@@ -39,4 +40,4 @@ The sync Worker lives in the `Worker` folder of the bundle, not on GitHub Pages.
 
 ---
 
-Last updated: October 2026 (v1.0.1)
+Last updated: October 2026 (v1.1.0)

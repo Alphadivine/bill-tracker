@@ -15,13 +15,13 @@
   const CATEGORIES = ["Housing", "Utilities", "Transportation", "Insurance", "Debt", "Subscriptions", "Health", "Personal", "Other"];
   const TEMPLATES = [
     { name: "Rent", cat: "Housing", day: 1 },
-    { name: "Mortgage", cat: "Housing", day: 1 },
+    { name: "Mortgage", cat: "Housing", day: 1, tags: ["Debt"] },
     { name: "Electric", cat: "Utilities", day: 18, varies: true },
     { name: "Gas / heat", cat: "Utilities", day: 20, varies: true },
     { name: "Water", cat: "Utilities", day: 20, varies: true },
     { name: "Internet", cat: "Utilities", day: 25 },
     { name: "Phone", cat: "Utilities", day: 5 },
-    { name: "Car payment", cat: "Transportation", day: 15 },
+    { name: "Car payment", cat: "Transportation", day: 15, tags: ["Debt"] },
     { name: "Car insurance", cat: "Insurance", day: 22 },
     { name: "Renter's insurance", cat: "Insurance", day: 1 },
     { name: "Credit card", cat: "Debt", day: 28 },
@@ -643,6 +643,21 @@
   // comes due after moving off a weekend or bank holiday. Payments are stored
   // against the scheduled date, so changing the rule never loses them.
   const billShift = (b) => b.shift || "after";
+  // A bill has one main category (used for Insights totals) and can also be
+  // listed under extra ones, e.g. a mortgage under Housing and Debt.
+  const billCats = (b) => { const out = [b.category || "Other"]; for (const t of b.tags || []) if (t && !out.includes(t)) out.push(t); return out; };
+  const catFilter = () => LS.get("bt_cat") || "";
+  const passesCat = (o) => { const f = catFilter(); return !f || billCats(o.b).includes(f); };
+  function catFilterBar() {
+    const f = catFilter();
+    const used = new Set();
+    IDX.bills.forEach((b) => billCats(b).forEach((c) => used.add(c)));
+    if (f) used.add(f);
+    if (used.size < 2) return "";
+    const list = CATEGORIES.filter((c) => used.has(c)).concat(Array.from(used).filter((c) => !CATEGORIES.includes(c)));
+    return '<div class="chips scroll" role="group" aria-label="Filter by category">' + [""].concat(list).map((c) =>
+      '<button class="chip" data-act="catFilter" data-cat="' + esc(c) + '" aria-pressed="' + (f === c) + '">' + esc(c || "All bills") + "</button>").join("") + "</div>";
+  }
   function makeOcc(b, d) {
     const key = b.id + "|" + d;
     const pay = IDX.pay.get(key) || null;
@@ -834,7 +849,7 @@
       '<button class="check' + (o.paid ? " on" : "") + '" data-act="togglePaid" data-key="' + esc(o.key) + '" aria-pressed="' + o.paid + '" aria-label="' + esc((o.paid ? "Mark unpaid: " : "Mark paid: ") + o.b.name + " " + fmtShort(o.date)) + '"><span class="ring">' + (o.paid ? icon("check", 14, 3) : "") + "</span></button>" +
       '<button class="billmain" data-act="openBill" data-key="' + esc(o.key) + '">' +
       '<span><span class="billname">' + esc(o.b.name) + '</span><span class="billmeta dueonphone ' + st.cls + '">' + esc(st.text) + "</span></span>" +
-      '<span class="billcat">' + esc(o.b.category || "Other") + "</span>" +
+      '<span class="billcat">' + esc(billCats(o.b).join(" · ")) + "</span>" +
       '<span class="billdue ' + st.cls + '">' + esc(st.text) + "</span>" +
       '<span class="billamt">' + money(o.amount) + up + "</span></button></div>";
   }
@@ -862,8 +877,11 @@
     const t = today();
     const mk = UI.homeMonth || t.slice(0, 7);
     const a = mk + "-01", z = monthEnd(mk);
-    const occs = occurrences(a, z);
+    const filt = catFilter();
+    const allOccs = occurrences(a, z);
+    const occs = allOccs.filter(passesCat);
     const total = sum(occs, "amount"), paid = sum(occs.filter((o) => o.paid), "amount"), owed = r2(total - paid);
+    const allTotal = sum(allOccs, "amount"), allPct = allTotal ? Math.round((sum(allOccs.filter((o) => o.paid), "amount") / allTotal) * 100) : 0;
     const income = payConfigured() ? sum(paydaysBetween(a, z), (d) => checkAmount(d)) : 0;
     const cur = currentPeriod();
     const name = DB.settings.name ? "Hi " + esc(DB.settings.name) : "Your bills";
@@ -878,12 +896,12 @@
       hero = '<div class="hero"><span class="sub">' + (short ? "Short this paycheck" : "Safe to spend") + (cur.next ? " until " + fmtShort(cur.next) : "") + '</span>' +
         '<span class="huge">' + money(short ? -cur.left : cur.left) + "</span>" +
         '<span class="sub">' + (short ? "Bills and savings for this check add up to more than it pays. See Paychecks to rebalance." : esc(explainLeft(cur))) + "</span>" +
-        '<div class="bar" role="img" aria-label="' + Math.round(total ? (paid / total) * 100 : 0) + '% of this month\'s bills paid"><span style="width:' + (total ? Math.round((paid / total) * 100) : 0) + '%"></span></div></div>';
+        '<div class="bar" role="img" aria-label="' + allPct + '% of this month\'s bills paid"><span style="width:' + allPct + '%"></span></div></div>';
     } else {
       hero = '<div class="hero"><span class="sub">Safe to spend</span><span class="big">Add your paycheck</span><span class="sub">Tell the app when you get paid and how much, and it works out what\'s safe to spend.</span><a class="btn" style="align-self:flex-start;margin-top:6px" href="#/settings">Set up paycheck</a></div>';
     }
     const kpis = '<div class="kpis">' + hero +
-      '<div class="kpi"><span class="label">Total bills</span><span class="value">' + money(total) + '</span><span class="note desk-only">' + (income ? money(income - total) + " left of " + money(income) + " income" : occs.length + " bills this month") + "</span></div>" +
+      '<div class="kpi"><span class="label">' + (filt ? esc(filt) + " bills" : "Total bills") + '</span><span class="value">' + money(total) + '</span><span class="note desk-only">' + (income && !filt ? money(income - total) + " left of " + money(income) + " income" : occs.length + " bills this month") + "</span></div>" +
       '<div class="kpi"><span class="label">Paid so far</span><span class="value accent-text">' + money(paid) + '</span><div class="bar thin desk-only"><span style="width:' + (total ? Math.round((paid / total) * 100) : 0) + '%"></span></div></div>' +
       '<div class="kpi"><span class="label">Still owed</span><span class="value' + (owed > 0 ? " warn-text" : "") + '">' + money(owed) + '</span><span class="note desk-only">' + (soon.length ? soon.length + " due in the next 7 days" : "Nothing due this week") + "</span></div></div>";
 
@@ -896,7 +914,7 @@
     if (!IDX.bills.length) {
       list = '<div class="card empty"><h2>Add your first bill</h2><p>Pick a common one to start, or add your own. You can mark bills paid with one tap.</p>' + templateChips() + '<a class="btn primary" href="#/bill/new">' + icon("plus", 18, 2.4) + "Add a bill</a></div>";
     } else if (!occs.length) {
-      list = '<div class="card empty"><p>No bills due in ' + fmtMonth(mk) + ".</p></div>";
+      list = '<div class="card empty"><p>No ' + (filt ? esc(filt) + " " : "") + "bills due in " + fmtMonth(mk) + ".</p>" + (filt ? '<button class="btn small" data-act="catFilter" data-cat="">Show all bills</button>' : "") + "</div>";
     } else list = billTable(occs);
 
     let side = "";
@@ -916,7 +934,7 @@
         return '<div class="cat"><div class="line"><span class="strong">' + esc(g.name) + '</span><span class="muted">' + money(s.saved) + " / " + money(s.target) + '</span></div><div class="bar thin"><span style="width:' + s.pct + '%"></span></div></div>';
       }).join("") + "</div>";
     }
-    const subs = IDX.bills.filter((b) => b.category === "Subscriptions" && !(b.until && b.until <= t));
+    const subs = IDX.bills.filter((b) => billCats(b).includes("Subscriptions") && !(b.until && b.until <= t));
     if (subs.length) {
       const m = sum(subs, monthlyEquiv);
       side += '<a class="banner warn" href="#/insights" style="justify-content:space-between"><span class="stack" style="gap:2px"><span class="strong">Subscriptions</span><span class="small">' + subs.length + " active · " + money(m) + ' a month</span></span><span class="big" style="font-size:22px">' + money(m * 12) + "/yr</span></a>";
@@ -928,7 +946,7 @@
       '<a class="iconbtn primary phone-only" href="#/bill/new" aria-label="Add a bill">' + icon("plus", 20, 2.4) + "</a>" +
       '<a class="iconbtn phone-only" href="#/settings" aria-label="Settings">' + icon("gear") + "</a></div></div>" +
       kpis + alerts.join("") +
-      '<div class="row-wrap"><section class="grow stack" aria-label="Bills"><div class="cardhead phone-only"><h2>Bills this month</h2><span class="meta">Tap the circle to mark paid</span></div>' + list + "</section>" +
+      '<div class="row-wrap"><section class="grow stack" aria-label="Bills"><div class="cardhead phone-only"><h2>Bills this month</h2><span class="meta">Tap the circle to mark paid</span></div>' + catFilterBar() + list + "</section>" +
       (side ? '<div class="aside desk-only">' + side + "</div>" : "") + "</div>";
   }
 
@@ -990,7 +1008,7 @@
     const [y, m] = mk.split("-").map(Number);
     const first = new Date(y, m - 1, 1).getDay();
     const days = dim(y, m - 1);
-    const occs = occurrences(mk + "-01", monthEnd(mk));
+    const occs = occurrences(mk + "-01", monthEnd(mk)).filter(passesCat);
     const byDay = new Map();
     for (const o of occs) { if (!byDay.has(o.date)) byDay.set(o.date, []); byDay.get(o.date).push(o); }
     const paydays = new Set(payConfigured() ? paydaysBetween(mk + "-01", monthEnd(mk)) : []);
@@ -1025,6 +1043,7 @@
     if (!detail) detail = '<div class="card"><span class="muted">Nothing due this day.</span></div>';
     return '<div class="pagehead"><h1>' + fmtMonth(mk) + "</h1>" +
       '<div class="headactions"><div class="legend desk-only"><span><i style="background:var(--accent)"></i>Paid</span><span><i style="background:var(--warn)"></i>Due</span><span><i style="background:var(--teal)"></i>Payday</span></div>' + monthNav(mk, "calMonth") + "</div></div>" +
+      catFilterBar() +
       '<div class="row-wrap"><section class="card grow" aria-label="Month"><div class="calwrap"><div class="calhead" aria-hidden="true">' + DOW.map((d) => "<span>" + d + "</span>").join("") + '</div><div class="calgrid">' + cells + "</div></div>" +
       '<div class="legend phone-only" style="justify-content:center"><span><i style="background:var(--accent);border-radius:5px"></i>Paid</span><span><i style="background:var(--warn);border-radius:5px"></i>Due</span><span><i style="background:var(--teal)"></i>Payday</span></div></section>' +
       '<div class="aside"><h2>' + fmtLong(sel) + "</h2>" + detail + "</div></div>";
@@ -1061,7 +1080,7 @@
     if (months.length >= 2) { const d = r2(vals[vals.length - 1] - vals[vals.length - 2]); trendNote = d === 0 ? "Same as last month" : money(Math.abs(d)) + (d < 0 ? " less" : " more") + " than " + MON[+months[months.length - 2].slice(5) - 1]; }
     else trendNote = "Builds up as you use the app";
 
-    const subs = IDX.bills.filter((b) => b.category === "Subscriptions" && !(b.until && b.until <= t));
+    const subs = IDX.bills.filter((b) => billCats(b).includes("Subscriptions") && !(b.until && b.until <= t));
     const subRows = subs.map((b) => { const mth = monthlyEquiv(b); return "<tr><td>" + esc(b.name) + '</td><td class="r">' + money(mth) + '</td><td class="r strong">' + money(mth * 12) + "</td></tr>"; }).join("");
     const subM = sum(subs, monthlyEquiv);
     const subCard = '<section class="card"><div class="cardhead"><h2>Subscriptions</h2><span class="meta">' + subs.length + " active</span></div>" +
@@ -1146,7 +1165,7 @@
 
   /* ---------------- views: Bill form ---------------- */
   function draftFrom(b) {
-    return { name: b.name, amount: String(b.amount), category: b.category || "Other", repeat: b.repeat || "monthly", day: Number(b.day) || 1, month: Number(b.month) || 0, date: b.date || today(), remind: b.remind == null ? DB.settings.reminders.days : b.remind, shift: b.shift || "after", autopay: !!b.autopay, varies: !!b.varies, link: b.link || "", notes: b.notes || "", tpl: "" };
+    return { name: b.name, amount: String(b.amount), category: b.category || "Other", tags: (b.tags || []).slice(), repeat: b.repeat || "monthly", day: Number(b.day) || 1, month: Number(b.month) || 0, date: b.date || today(), remind: b.remind == null ? DB.settings.reminders.days : b.remind, shift: b.shift || "after", autopay: !!b.autopay, varies: !!b.varies, link: b.link || "", notes: b.notes || "", tpl: "" };
   }
   function viewBillForm(arg) {
     const [idPart, query] = String(arg || "new").split("?");
@@ -1155,7 +1174,7 @@
     if (!isNew && (!bill || bill.deleted)) return '<div class="card empty"><h2>That bill isn\'t here anymore.</h2><a class="btn" href="#/home">Back to Home</a></div>';
     if (UI.draftFor !== (location.hash || "")) {
       UI.draftFor = location.hash || "";
-      UI.draft = isNew ? { name: "", amount: "", category: "Housing", repeat: "monthly", day: 1, month: new Date().getMonth(), date: today(), remind: DB.settings.reminders.days, shift: "after", autopay: false, varies: false, link: "", notes: "", tpl: "" } : draftFrom(bill);
+      UI.draft = isNew ? { name: "", amount: "", category: "Housing", tags: [], repeat: "monthly", day: 1, month: new Date().getMonth(), date: today(), remind: DB.settings.reminders.days, shift: "after", autopay: false, varies: false, link: "", notes: "", tpl: "" } : draftFrom(bill);
       const tq = new URLSearchParams(query || "").get("t");
       if (isNew && tq) applyTemplate(tq);
     }
@@ -1172,11 +1191,13 @@
       '<div class="fields">' +
       '<label class="field">Bill name<input type="text" data-draft="name" value="' + esc(d.name) + '" maxlength="60" required autocomplete="off"></label>' +
       '<label class="field">Amount' + (d.varies ? ' <span class="hint">your best guess</span>' : "") + '<span class="money-input"><input type="text" inputmode="decimal" data-draft="amount" value="' + esc(d.amount) + '" placeholder="0.00" autocomplete="off"></span></label>' +
-      '<label class="field">Category<select data-draft="category">' + CATEGORIES.map((c) => "<option" + (d.category === c ? " selected" : "") + ">" + c + "</option>").join("") + "</select></label>" +
+      '<label class="field">Main category <span class="hint">used for Insights totals</span><select data-draft="category" data-rerender>' + CATEGORIES.map((c) => "<option" + (d.category === c ? " selected" : "") + ">" + c + "</option>").join("") + "</select></label>" +
       '<label class="field">Repeats<select data-draft="repeat" data-rerender>' + Object.entries(REPEATS).map(([k, l]) => '<option value="' + k + '"' + (d.repeat === k ? " selected" : "") + ">" + l + "</option>").join("") + "</select></label>" +
       dueField +
       '<label class="field">Remind me<select data-draft="remind">' + remindOpts + "</select></label>" +
       '<label class="field">If it\'s due on a weekend or holiday<select data-draft="shift">' + Object.entries(SHIFTS).map(([k, l]) => '<option value="' + k + '"' + ((d.shift || "after") === k ? " selected" : "") + ">" + l + "</option>").join("") + "</select></label></div>" +
+      '<div class="stack" style="gap:8px"><span class="field" style="gap:2px">Also show under <span class="hint">optional · the Home and Calendar filters find it under these too</span></span><div class="chips">' +
+        CATEGORIES.filter((c) => c !== d.category).map((c) => '<button type="button" class="chip" data-act="tagToggle" data-cat="' + c + '" aria-pressed="' + (d.tags || []).includes(c) + '">' + ((d.tags || []).includes(c) ? icon("check", 14, 2.6) : "") + c + "</button>").join("") + "</div></div>" +
       '<div class="chips" style="gap:4px 22px"><label class="checkline"><input type="checkbox" data-draft="autopay"' + (d.autopay ? " checked" : "") + '>Paid by autopay</label><label class="checkline"><input type="checkbox" data-draft="varies" data-rerender' + (d.varies ? " checked" : "") + ">Amount changes each month</label></div>" +
       '<div class="stack" style="border-top:1px solid var(--line);padding-top:16px;gap:14px"><h2 style="font-size:15px">Notes and pay link <span class="small muted">· optional</span></h2>' +
       '<label class="field">Where to pay (website link)<input type="url" inputmode="url" data-draft="link" value="' + esc(d.link) + '" placeholder="https://" autocomplete="off"></label>' +
@@ -1195,6 +1216,7 @@
     d.tpl = t.name;
     d.name = t.blank ? "" : t.name;
     d.category = t.cat;
+    d.tags = (t.tags || []).slice();
     d.repeat = t.repeat || "monthly";
     if (t.day) d.day = t.day;
     d.varies = !!t.varies;
@@ -1289,7 +1311,7 @@
       '<div class="line"><span class="small strong ' + (o.paid ? "accent-text" : st.cls === "warn" ? "warn-text" : "muted") + '">' + esc(st.text) + '</span><span class="big">' + money(o.amount) + "</span></div>" +
       (o.moved ? '<div class="banner tip">' + icon("cal") + '<span class="grow-text">Normally due ' + fmtDow(o.nominal) + ", but that's " + esc(whyClosed(o.nominal)) + ", so it's due " + fmtDow(o.date) + ".</span></div>" : "") +
       (pc && pc.diff > 0 ? '<div class="banner warn">' + icon("up") + '<span class="grow-text">' + money(pc.diff) + " higher than " + fmtShort(pc.prevDate) + " (" + money(pc.prev) + ")</span></div>" : "") +
-      '<span class="small muted">' + esc(dueText(b)) + " · " + esc(b.category || "Other") + (b.autopay ? " · autopay" : "") + "</span>" +
+      '<span class="small muted">' + esc(dueText(b)) + " · " + esc(billCats(b).join(" · ")) + (b.autopay ? " · autopay" : "") + "</span>" +
       (o.paid ? '<label class="field">Amount paid<span class="money-input"><input type="text" inputmode="decimal" id="paidamt" value="' + o.amount + '"></span></label>' : b.varies ? '<label class="field">Actual amount <span class="hint">this bill changes each month</span><span class="money-input"><input type="text" inputmode="decimal" id="paidamt" value="' + o.amount + '"></span></label>' : "") +
       (b.notes ? '<div class="notebox">' + esc(b.notes) + "</div>" : "") +
       '<div class="headactions">' + (o.paid ? '<button class="btn" data-act="saveAmt" data-key="' + esc(key) + '">Save amount</button><button class="btn" data-act="togglePaid" data-key="' + esc(key) + '" data-close="1">Mark unpaid</button>' : '<button class="btn primary" data-act="markPaid" data-key="' + esc(key) + '">' + icon("check", 18, 2.6) + "Mark paid</button>") +
@@ -1422,8 +1444,8 @@
   function exportCsv() {
     const start = (DB.settings.startedOn || today()).slice(0, 7) + "-01";
     const end = monthEnd(today().slice(0, 7));
-    const rows = [["Due date", "Scheduled date", "Bill", "Category", "Amount", "Status", "Paid on", "Autopay", "Repeats", "Notes"]];
-    for (const o of occurrences(start, end)) rows.push([o.date, o.nominal, o.b.name, o.b.category, o.amount.toFixed(2), o.paid ? "Paid" : o.date < today() ? "Overdue" : "Unpaid", o.paid ? o.pay.paidOn || "" : "", o.b.autopay ? "Yes" : "No", REPEATS[o.b.repeat], o.b.notes || ""]);
+    const rows = [["Due date", "Scheduled date", "Bill", "Category", "Also in", "Amount", "Status", "Paid on", "Autopay", "Repeats", "Notes"]];
+    for (const o of occurrences(start, end)) rows.push([o.date, o.nominal, o.b.name, o.b.category, billCats(o.b).slice(1).join("; "), o.amount.toFixed(2), o.paid ? "Paid" : o.date < today() ? "Overdue" : "Unpaid", o.paid ? o.pay.paidOn || "" : "", o.b.autopay ? "Yes" : "No", REPEATS[o.b.repeat], o.b.notes || ""]);
     download("bill-tracker-" + today() + ".csv", csv(rows), "text/csv");
   }
   function downloadYear(y) {
@@ -1491,6 +1513,15 @@
     homeMonth(el) { UI.homeMonth = addMonths(UI.homeMonth || today().slice(0, 7), +el.dataset.dir); render(); },
     calMonth(el) { UI.calMonth = addMonths(UI.calMonth || today().slice(0, 7), +el.dataset.dir); UI.calSel = null; render(); },
     calSel(el) { UI.calSel = el.dataset.day; UI.keepScroll = true; render(); const a = $(".aside h2"); if (a && window.innerWidth < 900) a.scrollIntoView({ behavior: "smooth", block: "start" }); },
+    catFilter(el) { LS.set("bt_cat", el.dataset.cat || ""); UI.keepScroll = true; render(); },
+    tagToggle(el, e) {
+      e.preventDefault();
+      readDraftInputs();
+      const c = el.dataset.cat, t = UI.draft.tags || (UI.draft.tags = []);
+      UI.draft.tags = t.includes(c) ? t.filter((x) => x !== c) : t.concat([c]);
+      UI.keepScroll = true; render();
+      const b = $('[data-act="tagToggle"][data-cat="' + c + '"]'); if (b) b.focus();
+    },
     insMode(el) { UI.insMode = el.dataset.mode; render(); },
     insMonth(el) { UI.insMonth = addMonths(UI.insMonth || today().slice(0, 7), +el.dataset.dir); render(); },
     insYear(el) { UI.insYear = (UI.insYear || +today().slice(0, 4)) + +el.dataset.dir; render(); },
@@ -1886,7 +1917,7 @@
     const b = isNew ? { id: uid(), createdOn: today() } : Object.assign({}, IDX.billById.get(id));
     if (!isNew && Number(b.amount) !== amount && !d.varies) { b.prevAmount = Number(b.amount); b.amountChangedOn = today(); }
     Object.assign(b, {
-      name, amount, category: d.category, repeat: d.repeat, day: Number(d.day) || 1, month: Number(d.month) || 0,
+      name, amount, category: d.category, tags: (d.tags || []).filter((c) => c !== d.category && CATEGORIES.includes(c)), repeat: d.repeat, day: Number(d.day) || 1, month: Number(d.month) || 0,
       date: d.repeat === "once" || d.repeat === "biweekly" ? d.date : null,
       remind: Number(d.remind), shift: SHIFTS[d.shift] ? d.shift : "after", autopay: !!d.autopay, varies: !!d.varies,
       link: String(d.link || "").trim(), notes: String(d.notes || "").trim(), deleted: false,

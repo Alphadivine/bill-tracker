@@ -269,6 +269,10 @@ svg { flex: none; }
   min-height: 40px; padding: 0 14px; border-radius: 20px; border: 1px solid var(--field); background: var(--card);
   font-size: 13px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;
 }
+.chips.scroll { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
+.chips.scroll::-webkit-scrollbar { display: none; }
+.chips.scroll .chip { flex: none; }
+@media (min-width: 900px) { .chips.scroll { flex-wrap: wrap; overflow: visible; } }
 .chip[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .seg { display: inline-flex; gap: 4px; background: var(--track); border-radius: 22px; padding: 4px; }
 .seg button { min-height: 38px; padding: 0 16px; border-radius: 19px; border: none; background: transparent; font-size: 13px; font-weight: 600; color: var(--muted); }
