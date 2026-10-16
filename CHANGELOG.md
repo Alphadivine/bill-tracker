@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10 — Move a paycheck's date (v1.2.0)
+
+- Paychecks → Edit now changes a single check's date as well as its amount (for example, paid a day early). Bills due from the new date until the next payday move onto that check, and the card shows "Moved from…". "Back to normal" undoes it. Holds and amount changes stay with the check when it moves.
+- New "Change pay schedule" button on the Paychecks screen jumps straight to Settings → Paycheck to change your regular payday.
+
 ## 2026-10 — Multiple categories and a category filter (v1.1.0)
 
 - Bills can be listed under more than one category. The first is the main category (Insights totals count the bill there only, so they still add up to 100%); "Also show under" adds extra ones, e.g. a house loan under Housing and Debt.

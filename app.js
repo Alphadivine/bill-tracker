@@ -209,6 +209,7 @@
   function settingsChanged() { DB.settings.updatedAt = Date.now(); }
 
   function rebuildIndex() {
+    ACT2SCHED.clear();
     const pay = new Map(), byBill = new Map();
     for (const p of DB.payments) {
       if (p.deleted) continue;
@@ -565,11 +566,21 @@
   function paydaysBetween(a, z) {
     // Paydays on a weekend or bank holiday move (by default to the business day before).
     const mode = (DB.settings.pay && DB.settings.pay.shift) || "before";
-    const raw = rawPaydays(addDays(a, -7), addDays(z, 7));
+    // A single paycheck can also be moved by hand (Paychecks → Edit). Holds and
+    // amount changes stay keyed by the scheduled date, so moving keeps them.
+    const raw = rawPaydays(addDays(a, -21), addDays(z, 21));
     const out = [];
-    for (const d of raw) { const s = shiftDate(d, mode); if (s >= a && s <= z && !out.includes(s)) out.push(s); }
+    for (const d of raw) {
+      const sched = shiftDate(d, mode);
+      const c = IDX && IDX.checks.get(sched);
+      const actual = c && c.date ? c.date : sched;
+      ACT2SCHED.set(actual, sched);
+      if (actual >= a && actual <= z && !out.includes(actual)) out.push(actual);
+    }
     return out.sort();
   }
+  const ACT2SCHED = new Map();
+  const schedOf = (d) => ACT2SCHED.get(d) || d;
   function rawPaydays(a, z) {
     const p = DB.settings.pay;
     const out = [];
@@ -595,7 +606,8 @@
   }
   const paydayOnOrBefore = (t) => { const l = paydaysBetween(addDays(t, -40), t); return l[l.length - 1] || null; };
   const paydayAfter = (t) => paydaysBetween(addDays(t, 1), addDays(t, 40))[0] || null;
-  const checkAmount = (d) => { const c = IDX.checks.get(d); return c ? c.amount : Number(DB.settings.pay.amount) || 0; };
+  const checkAmount = (d) => { const c = IDX.checks.get(schedOf(d)); return c && c.amount != null ? c.amount : Number(DB.settings.pay.amount) || 0; };
+  const holdFor = (d) => { const h = d && IDX.holds.get(schedOf(d)); return h ? h.amount : 0; };
   const payConfigured = () => { const p = DB.settings.pay; return !!(p && p.freq && (p.freq === "semimonthly" || p.freq === "monthly" || p.anchor)); };
 
   function billDates(b, a, z) {
@@ -708,17 +720,18 @@
     const prev = paydayOnOrBefore(addDays(payday, -1));
     const occs = occurrences(payday, end);
     const goals = saveGoalsFor(payday);
-    const holdOut = IDX.holds.get(payday) ? IDX.holds.get(payday).amount : 0;
-    const holdIn = prev && IDX.holds.get(prev) ? IDX.holds.get(prev).amount : 0;
+    const holdOut = holdFor(payday);
+    const holdIn = holdFor(prev);
     const income = checkAmount(payday);
     const billsTotal = sum(occs, "amount");
     const goalTotal = sum(goals, "amount");
     const left = r2(income + holdIn - billsTotal - goalTotal - holdOut);
-    return { payday, end, next, income, occs, goals, goalTotal, billsTotal, holdOut, holdIn, left };
+    const sched = schedOf(payday);
+    return { payday, sched, moved: sched !== payday, end, next, income, occs, goals, goalTotal, billsTotal, holdOut, holdIn, left };
   }
   const currentPeriod = () => (payConfigured() ? period(paydayOnOrBefore(today())) : null);
   function holdSuggestion(cur, nxt) {
-    if (!cur || !nxt || IDX.holds.get(cur.payday)) return null;
+    if (!cur || !nxt || holdFor(cur.payday)) return null;
     const gap = cur.left - nxt.left;
     if (gap < 100) return null;
     let h = Math.floor(gap / 2 / 10) * 10;
@@ -831,6 +844,7 @@
     const y = window.scrollY;
     $("#root").innerHTML = shell(active, html);
     if (UI.keepScroll) { window.scrollTo(0, y); UI.keepScroll = false; }
+    else if (r.name === "settings" && r.arg) { const t = document.getElementById(r.arg); if (t) setTimeout(() => { t.scrollIntoView({ block: "start" }); const f = t.querySelector("#setanchor, #setday1") || t.querySelector("input, select"); if (f) f.focus({ preventScroll: true }); }, 0); }
     UI.pendingRender = false;
   }
   function softRender() {
@@ -958,12 +972,12 @@
       return '<div class="line"><span>' + esc(o.b.name) + " · " + fmtShort(o.date) + (o.paid ? ' <span class="badge paid">paid</span>' : "") + (pc && pc.diff > 0 ? ' <span class="badge warn">+' + money(pc.diff) + "</span>" : "") + '</span><span class="amt">' + money(o.amount) + "</span></div>";
     }).join("") || '<span class="small muted">No bills due in this stretch.</span>';
     const goals = p.goals.map((x) => '<div class="line"><span>' + esc(x.g.name) + '</span><span class="amt">' + money(x.amount) + "</span></div>").join("");
-    const hold = p.holdOut ? '<div class="line"><span>Held for next check <button class="linkbtn" data-act="removeHold" data-day="' + p.payday + '">Remove</button></span><span class="amt">' + money(p.holdOut) + "</span></div>" : "";
+    const hold = p.holdOut ? '<div class="line"><span>Held for next check <button class="linkbtn" data-act="removeHold" data-day="' + p.sched + '">Remove</button></span><span class="amt">' + money(p.holdOut) + "</span></div>" : "";
     const holdIn = p.holdIn ? '<div class="line accent-text"><span>Held from last check</span><span class="amt">+' + money(p.holdIn) + "</span></div>" : "";
     const spent = p.billsTotal + p.goalTotal + p.holdOut;
     const pctB = p.income > 0 ? Math.min(100, Math.round((p.billsTotal / (p.income + p.holdIn)) * 100)) : 0;
     const pctO = p.income > 0 ? Math.min(100 - pctB, Math.round(((p.goalTotal + p.holdOut) / (p.income + p.holdIn)) * 100)) : 0;
-    return '<section class="card' + (isCur ? " outline" : "") + '"><div class="cardhead" style="align-items:flex-start"><div class="stack" style="gap:4px"><span class="kicker' + (isCur ? " accent" : "") + '">' + label + "</span><h3 style=\"font-size:18px\">" + fmtDow(p.payday) + '</h3><span class="small muted">Bills due ' + fmtShort(p.payday) + " – " + fmtShort(p.end) + '</span></div><div class="stack" style="gap:0;align-items:flex-end"><span class="strong" style="font-size:18px">' + money(p.income) + '</span><button class="linkbtn" data-act="editCheck" data-day="' + p.payday + '">Edit</button></div></div>' +
+    return '<section class="card' + (isCur ? " outline" : "") + '"><div class="cardhead" style="align-items:flex-start"><div class="stack" style="gap:4px"><span class="kicker' + (isCur ? " accent" : "") + '">' + label + "</span><h3 style=\"font-size:18px\">" + fmtDow(p.payday) + '</h3>' + (p.moved ? '<span class="badge teal" style="align-self:flex-start">Moved from ' + fmtShort(p.sched) + "</span>" : "") + '<span class="small muted">Bills due ' + fmtShort(p.payday) + " – " + fmtShort(p.end) + '</span></div><div class="stack" style="gap:0;align-items:flex-end"><span class="strong" style="font-size:18px">' + money(p.income) + '</span><button class="linkbtn" data-act="editCheck" data-day="' + p.payday + '">Edit</button></div></div>' +
       lines + goals + hold + holdIn +
       (p.income ? '<div class="bar" aria-hidden="true"><span style="width:' + pctB + '%"></span><span class="soft" style="width:' + pctO + '%"></span></div>' : "") +
       '<div class="line total"><span class="muted">' + (p.left < 0 ? "Short by" : "Safe to spend") + '</span><span class="big ' + (p.left < 0 ? "warn-text" : isCur ? "accent-text" : "") + '" style="font-size:22px">' + money(Math.abs(p.left)) + "</span></div></section>";
@@ -982,7 +996,7 @@
     const p = DB.settings.pay;
     let banner = "";
     if (sug) {
-      banner = '<div class="banner tip wrap">' + icon("bulb") + '<span class="grow-text">' + (sug.big ? esc(sug.big.b.name) + " lands on the " + fmtShort(sug.nxt.payday) + " check. " : "The " + fmtShort(sug.nxt.payday) + " check is tighter. ") + "Holding " + money(sug.amount) + ' from this one evens them out.</span><button class="btn primary small" data-act="hold" data-day="' + cur.payday + '" data-amt="' + sug.amount + '">Hold ' + money(sug.amount) + "</button></div>";
+      banner = '<div class="banner tip wrap">' + icon("bulb") + '<span class="grow-text">' + (sug.big ? esc(sug.big.b.name) + " lands on the " + fmtShort(sug.nxt.payday) + " check. " : "The " + fmtShort(sug.nxt.payday) + " check is tighter. ") + "Holding " + money(sug.amount) + ' from this one evens them out.</span><button class="btn primary small" data-act="hold" data-day="' + cur.sched + '" data-amt="' + sug.amount + '">Hold ' + money(sug.amount) + "</button></div>";
     } else if (cur.left < 0) {
       banner = '<div class="banner warn">' + icon("alert") + '<span class="grow-text">This check is short by ' + money(-cur.left) + ". Moving a bill's due date, or holding money from the check before, would help.</span></div>";
     }
@@ -994,7 +1008,7 @@
 
     const r = DB.settings.reminders;
     const preview = nxt ? '<div class="notif"><span class="logo">' + icon("logo", 18, 2.2) + '</span><span class="stack" style="gap:3px"><span class="t">Calendar · night before ' + fmtShort(nxt.payday) + '</span><span class="h">Payday tomorrow: ' + money(nxt.income) + '</span><span class="b">' + (nxt.occs.length ? "This check covers " + esc(nxt.occs.slice(0, 3).map((o) => o.b.name).join(", ")) + (nxt.occs.length > 3 ? " and more" : "") + " (" + money(nxt.billsTotal) + "). " : "No bills due before the next one. ") + "Safe to spend: " + money(nxt.left) + ".</span></span></div>" : "";
-    return '<div class="pagehead"><div class="stack" style="gap:2px"><span class="sub">Paid ' + esc(FREQS[p.freq].toLowerCase()) + " · " + money(p.amount) + " per check</span><h1>Paycheck planner</h1></div></div>" +
+    return '<div class="pagehead"><div class="stack" style="gap:2px"><span class="sub">Paid ' + esc(FREQS[p.freq].toLowerCase()) + " · " + money(p.amount) + " per check</span><h1>Paycheck planner</h1></div>" + '<div class="headactions"><a class="btn" href="#/settings/paycheck">' + icon("cal", 18) + "Change pay schedule</a></div></div>" +
       banner + '<div class="grid-auto">' + cards.join("") + "</div>" +
       '<div class="row-wrap"><section class="card" style="flex:1 1 340px"><div class="setting"><span class="txt">Payday reminders<span>' + (r.payday ? "On · a calendar alert the night before each payday" : "Off") + '</span></span><button class="switch" role="switch" aria-checked="' + !!r.payday + '" aria-label="Payday reminders" data-act="toggleReminder" data-k="payday"><span></span></button></div><span class="small muted">Reminders go through your phone\'s calendar. After changing this, download the calendar file again in <a href="#/settings">Settings</a>.</span></section>' +
       '<div style="flex:1 1 340px;min-width:0">' + preview + "</div></div>";
@@ -1579,11 +1593,36 @@
     hold(el) { const day = el.dataset.day, amt = +el.dataset.amt; UI.keepScroll = true; undoable("Holding " + money(amt) + " for the next check", () => upsert("holds", { id: day, amount: amt, deleted: false })); },
     removeHold(el) { const h = DB.holds.find((x) => x.id === el.dataset.day); if (!h) return; UI.keepScroll = true; undoable("Hold removed", () => { h.deleted = true; touch(h); }); },
     editCheck(el) {
-      const day = el.dataset.day;
-      openSheet("Paycheck on " + fmtShort(day), '<div class="form"><label class="field">Amount for this check<span class="money-input"><input id="amt" type="text" inputmode="decimal" value="' + checkAmount(day) + '"></span></label><span class="small muted">Only changes this one paycheck. Your usual amount is ' + money(DB.settings.pay.amount) + '.</span><div class="formactions">' + (IDX.checks.get(day) ? '<div class="left"><button class="btn small" data-act="resetCheck" data-day="' + day + '">Use usual amount</button></div>' : "") + '<button class="btn" data-act="closeSheet">Cancel</button><button class="btn primary" data-act="saveCheck" data-day="' + day + '">Save</button></div></div>');
+      const day = el.dataset.day, sched = schedOf(day);
+      const c = IDX.checks.get(sched);
+      const prev = paydayOnOrBefore(addDays(day, -1)), next = paydayAfter(day);
+      openSheet("Edit paycheck", '<div class="form">' +
+        '<div class="fields" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">' +
+        '<label class="field">Paid on<input id="ckdate" type="date" value="' + day + '"' + (prev ? ' min="' + addDays(prev, 1) + '"' : "") + (next ? ' max="' + addDays(next, -1) + '"' : "") + '></label>' +
+        '<label class="field">Amount<span class="money-input"><input id="amt" type="text" inputmode="decimal" value="' + checkAmount(day) + '"></span></label></div>' +
+        '<span class="small muted">Only changes this one paycheck. Normally it\'s ' + fmtDow(sched) + " for " + money(DB.settings.pay.amount) + ". Bills due from the new date until the next payday move to this check. To change your regular payday, use " + '<a href="#/settings/paycheck">Change pay schedule</a>.</span>' +
+        '<div class="error" id="ckerr" role="alert"></div>' +
+        '<div class="formactions">' + (c ? '<div class="left"><button class="btn small" data-act="resetCheck" data-day="' + sched + '">Back to normal</button></div>' : "") +
+        '<button class="btn" data-act="closeSheet">Cancel</button><button class="btn primary" data-act="saveCheck" data-day="' + day + '">Save</button></div></div>', { kicker: fmtDow(day) });
     },
-    saveCheck(el) { const amt = parseMoney($("#amt").value); if (!isFinite(amt) || amt < 0) return; closeSheet(); UI.keepScroll = true; upsert("checks", { id: el.dataset.day, amount: amt, deleted: false }); commit(); },
-    resetCheck(el) { const c = DB.checks.find((x) => x.id === el.dataset.day); if (c) { c.deleted = true; touch(c); } closeSheet(); UI.keepScroll = true; commit(); },
+    saveCheck(el) {
+      const day = el.dataset.day, sched = schedOf(day);
+      const err = (m) => { $("#ckerr").textContent = m; };
+      const amt = parseMoney($("#amt").value);
+      const date = $("#ckdate").value;
+      if (!isFinite(amt) || amt < 0) return err("Enter the amount for this check.");
+      if (!date) return err("Pick the date you were paid.");
+      const prev = paydayOnOrBefore(addDays(day, -1)), next = paydayAfter(day);
+      if ((prev && date <= prev) || (next && date >= next)) return err("Pick a date between " + (prev ? fmtShort(prev) : "the last check") + " and " + (next ? fmtShort(next) : "the next check") + ". To shift every payday, use Change pay schedule.");
+      const usual = Number(DB.settings.pay.amount) || 0;
+      const rec = { id: sched, amount: amt !== usual ? amt : null, date: date !== sched ? date : null };
+      rec.deleted = rec.amount == null && rec.date == null;
+      closeSheet(); UI.keepScroll = true;
+      upsert("checks", rec);
+      commit();
+      toast(date !== day ? "Paycheck moved to " + fmtDow(date) : "Paycheck saved");
+    },
+    resetCheck(el) { const c = DB.checks.find((x) => x.id === el.dataset.day); if (c) { c.deleted = true; touch(c); } closeSheet(); UI.keepScroll = true; commit(); toast("Paycheck back to normal"); },
     toggleReminder(el) { const k = el.dataset.k; DB.settings.reminders[k] = !DB.settings.reminders[k]; settingsChanged(); UI.keepScroll = true; commit(); },
     whatIf(el) { UI.whatIf[el.dataset.id] = +el.dataset.amt; UI.keepScroll = true; render(); },
     newGoal(el) { goalSheet(null, el.dataset.kind || "save"); },
