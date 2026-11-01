@@ -7,8 +7,8 @@
 
   const CFG = window.BILL_TRACKER_CONFIG || {};
   const SYNC_URL = String(CFG.syncUrl || "").trim().replace(/\/+$/, "");
-  const VERSION = "1.0.0";
-  const COLS = ["bills", "payments", "goals", "holds", "checks"];
+  const VERSION = "1.3.0";
+  const COLS = ["bills", "payments", "goals", "holds", "checks", "saves"];
   const PBKDF2_ITER = 250000;
   const SALT = "bill-tracker/v1";
 
@@ -155,6 +155,7 @@
       settings: {
         name: "",
         pay: { amount: 0, freq: "biweekly", anchor: "", day1: 1, day2: 15, shift: "before" },
+        savings: { mode: "none", value: 0, balance: 0, asOf: "", asOfTs: 0, name: "Savings" },
         reminders: { payday: true, due: true, price: true, days: 3 },
         startedOn: today(),
         updatedAt: Date.now(),
@@ -171,6 +172,7 @@
     db.settings.pay = Object.assign({}, base.settings.pay, db.settings.pay || {});
     db.settings.reminders = Object.assign({}, base.settings.reminders, db.settings.reminders || {});
     db.keyring = Object.assign({ pid: "", rid: "", updatedAt: 0 }, db.keyring || {});
+    db.settings.savings = Object.assign({}, base.settings.savings, db.settings.savings || {});
     for (const c of COLS) if (!Array.isArray(db[c])) db[c] = [];
     return db;
   }
@@ -225,6 +227,7 @@
       holds: new Map(DB.holds.filter((h) => !h.deleted).map((h) => [h.id, h])),
       checks: new Map(DB.checks.filter((h) => !h.deleted).map((h) => [h.id, h])),
       goals: DB.goals.filter((g) => !g.deleted),
+      saves: DB.saves.filter((x) => !x.deleted).sort((a, b) => (a.date < b.date ? -1 : 1)),
     };
   }
 
@@ -713,6 +716,47 @@
     }
     return out;
   }
+  /* ---------------- savings split ----------------
+   * Part of every paycheck goes straight to a savings account (split by the
+   * employer). The balance is the amount you entered on a given day, plus each
+   * paycheck's split since then, plus any money you added or took out by hand.
+   */
+  const svc = () => DB.settings.savings || { mode: "none" };
+  const savingsOn = () => svc().mode === "amount" || svc().mode === "percent";
+  function defaultSplit(payday) {
+    const s = svc();
+    if (s.mode === "amount") return r2(Math.min(Number(s.value) || 0, checkAmount(payday)));
+    if (s.mode === "percent") return r2((checkAmount(payday) * (Number(s.value) || 0)) / 100);
+    return 0;
+  }
+  function splitFor(payday) {
+    if (!payday) return 0;
+    const c = IDX.checks.get(schedOf(payday));
+    if (c && c.save != null) return r2(c.save);
+    return defaultSplit(payday);
+  }
+  const splitLabel = () => { const s = svc(); return s.mode === "percent" ? (Number(s.value) || 0) + "% of each check" : money(Number(s.value) || 0) + " every paycheck"; };
+  function savingsHistory(upTo, display) {
+    const s = svc();
+    const end = upTo || today();
+    const items = [];
+    if (s.asOf && savingsOn()) for (const d of paydaysBetween(addDays(s.asOf, 1), end)) { const a = splitFor(d); if (a) items.push({ date: d, amount: a, kind: "split", note: "Paycheck split" }); }
+    for (const x of IDX.saves) if ((display || (x.createdAt || 0) > (s.asOfTs || 0)) && x.date <= end) items.push({ date: x.date, amount: x.amount, kind: "manual", note: x.note || (x.amount < 0 ? "Took money out" : "Added money"), id: x.id });
+    items.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    return items;
+  }
+  function savingsBalance(upTo) {
+    const s = svc();
+    if (!s.asOf) return null;
+    return r2((Number(s.balance) || 0) + sum(savingsHistory(upTo), "amount"));
+  }
+  // Save a new rule or balance from today on, so past deposits keep the rule they had.
+  function rebaseSavings(next) {
+    const cur = savingsBalance();
+    DB.settings.savings = Object.assign({}, svc(), next, { balance: next.balance != null ? next.balance : cur != null ? cur : 0, asOf: today(), asOfTs: Date.now() });
+    settingsChanged();
+  }
+
   function period(payday) {
     if (!payday) return null;
     const next = paydayAfter(payday);
@@ -725,9 +769,10 @@
     const income = checkAmount(payday);
     const billsTotal = sum(occs, "amount");
     const goalTotal = sum(goals, "amount");
-    const left = r2(income + holdIn - billsTotal - goalTotal - holdOut);
+    const save = splitFor(payday);
+    const left = r2(income + holdIn - save - billsTotal - goalTotal - holdOut);
     const sched = schedOf(payday);
-    return { payday, sched, moved: sched !== payday, end, next, income, occs, goals, goalTotal, billsTotal, holdOut, holdIn, left };
+    return { payday, sched, moved: sched !== payday, end, next, income, save, occs, goals, goalTotal, billsTotal, holdOut, holdIn, left };
   }
   const currentPeriod = () => (payConfigured() ? period(paydayOnOrBefore(today())) : null);
   function holdSuggestion(cur, nxt) {
@@ -874,8 +919,10 @@
     return '<div class="headactions"><button class="iconbtn" data-act="' + act + '" data-dir="-1" aria-label="Previous month">' + icon("left", 18, 2.2) + '</button><button class="iconbtn" data-act="' + act + '" data-dir="1" aria-label="Next month">' + icon("right", 18, 2.2) + "</button></div>";
   }
   function explainLeft(p) {
-    const parts = [money(p.billsTotal) + " in bills"];
-    if (p.goalTotal) parts.push(money(p.goalTotal) + " to savings");
+    const parts = [];
+    if (p.save) parts.push(money(p.save) + " to " + (svc().name || "savings"));
+    parts.push(money(p.billsTotal) + " in bills");
+    if (p.goalTotal) parts.push(money(p.goalTotal) + " set aside for goals");
     if (p.holdOut) parts.push(money(p.holdOut) + " held for next check");
     let s = "After " + (parts.length > 1 ? parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1] : parts[0]);
     if (p.holdIn) s += ", plus " + money(p.holdIn) + " held from last check";
@@ -940,6 +987,11 @@
         (cur.holdOut ? '<div class="line"><span>Held for next check</span><span class="amt">' + money(cur.holdOut) + "</span></div>" : "") +
         '<div class="line total"><span class="muted">Safe to spend</span><span class="big accent-text" style="font-size:22px">' + money(cur.left) + "</span></div></div>";
     }
+    if (savingsOn() || svc().asOf) {
+      const bal = savingsBalance();
+      const nextPay = paydayAfter(t);
+      side += '<a class="card" href="#/goals" style="color:inherit;font-weight:400"><div class="cardhead"><h3>' + esc(svc().name || "Savings") + '</h3><span class="small accent-text strong">Details</span></div><span class="big teal-text">' + money(bal || 0) + '</span><span class="small muted">' + (savingsOn() ? splitLabel() + (nextPay ? " · next +" + money(splitFor(nextPay)) + " on " + fmtShort(nextPay) : "") : "Split is off") + "</span></a>";
+    }
     const goals = IDX.goals.slice(0, 3);
     if (goals.length) {
       side += '<div class="card"><div class="cardhead"><h3>Goals</h3><a href="#/goals" class="small">All goals</a></div>' + goals.map((g) => {
@@ -972,13 +1024,14 @@
       return '<div class="line"><span>' + esc(o.b.name) + " · " + fmtShort(o.date) + (o.paid ? ' <span class="badge paid">paid</span>' : "") + (pc && pc.diff > 0 ? ' <span class="badge warn">+' + money(pc.diff) + "</span>" : "") + '</span><span class="amt">' + money(o.amount) + "</span></div>";
     }).join("") || '<span class="small muted">No bills due in this stretch.</span>';
     const goals = p.goals.map((x) => '<div class="line"><span>' + esc(x.g.name) + '</span><span class="amt">' + money(x.amount) + "</span></div>").join("");
+    const saveLine = p.save ? '<div class="line teal-text"><span>' + esc(svc().name || "Savings") + ' <span class="small">· split from check</span></span><span class="amt">' + money(p.save) + "</span></div>" : "";
     const hold = p.holdOut ? '<div class="line"><span>Held for next check <button class="linkbtn" data-act="removeHold" data-day="' + p.sched + '">Remove</button></span><span class="amt">' + money(p.holdOut) + "</span></div>" : "";
     const holdIn = p.holdIn ? '<div class="line accent-text"><span>Held from last check</span><span class="amt">+' + money(p.holdIn) + "</span></div>" : "";
     const spent = p.billsTotal + p.goalTotal + p.holdOut;
     const pctB = p.income > 0 ? Math.min(100, Math.round((p.billsTotal / (p.income + p.holdIn)) * 100)) : 0;
-    const pctO = p.income > 0 ? Math.min(100 - pctB, Math.round(((p.goalTotal + p.holdOut) / (p.income + p.holdIn)) * 100)) : 0;
+    const pctO = p.income > 0 ? Math.min(100 - pctB, Math.round(((p.save + p.goalTotal + p.holdOut) / (p.income + p.holdIn)) * 100)) : 0;
     return '<section class="card' + (isCur ? " outline" : "") + '"><div class="cardhead" style="align-items:flex-start"><div class="stack" style="gap:4px"><span class="kicker' + (isCur ? " accent" : "") + '">' + label + "</span><h3 style=\"font-size:18px\">" + fmtDow(p.payday) + '</h3>' + (p.moved ? '<span class="badge teal" style="align-self:flex-start">Moved from ' + fmtShort(p.sched) + "</span>" : "") + '<span class="small muted">Bills due ' + fmtShort(p.payday) + " – " + fmtShort(p.end) + '</span></div><div class="stack" style="gap:0;align-items:flex-end"><span class="strong" style="font-size:18px">' + money(p.income) + '</span><button class="linkbtn" data-act="editCheck" data-day="' + p.payday + '">Edit</button></div></div>' +
-      lines + goals + hold + holdIn +
+      saveLine + lines + goals + hold + holdIn +
       (p.income ? '<div class="bar" aria-hidden="true"><span style="width:' + pctB + '%"></span><span class="soft" style="width:' + pctO + '%"></span></div>' : "") +
       '<div class="line total"><span class="muted">' + (p.left < 0 ? "Short by" : "Safe to spend") + '</span><span class="big ' + (p.left < 0 ? "warn-text" : isCur ? "accent-text" : "") + '" style="font-size:22px">' + money(Math.abs(p.left)) + "</span></div></section>";
   }
@@ -1135,7 +1188,7 @@
     const rangeTxt = y === curY ? "Jan – " + MON[new Date().getMonth()] : "Full year";
     return '<div class="pagehead"><h1>Insights</h1><div class="headactions">' + seg +
       '<button class="iconbtn" data-act="insYear" data-dir="-1" aria-label="Previous year">' + icon("left", 18, 2.2) + '</button><button class="iconbtn" data-act="insYear" data-dir="1" aria-label="Next year">' + icon("right", 18, 2.2) + "</button></div></div>" +
-      '<section class="yearband"><div class="stack" style="gap:4px;flex:1 1 200px"><span class="kicker" style="color:var(--hero-sub)">' + y + (y === curY ? " so far" : "") + '</span><span class="huge">' + money(yd.total) + '</span><span class="sub">paid in bills, ' + rangeTxt + "</span></div>" +
+      '<section class="yearband"><div class="stack" style="gap:4px;flex:1 1 200px"><span class="kicker" style="color:var(--hero-sub)">' + y + (y === curY ? " so far" : "") + '</span><span class="huge">' + money(yd.total) + '</span><span class="sub">paid in bills, ' + rangeTxt + "</span>" + (function () { const v = sum(savingsHistory(y + "-12-31").filter((x) => x.kind === "split" && x.date.slice(0, 4) === String(y)), "amount"); return v ? '<span class="sub">plus ' + money(v) + " split to " + esc(svc().name || "savings") + "</span>" : ""; })() + "</div>" +
       '<div class="cats">' + (yd.cats.map(([c, v]) => '<div class="stack" style="gap:2px"><span class="sub">' + esc(c) + '</span><span class="strong" style="font-size:17px">' + money(v) + "</span></div>").join("") || '<span class="sub">Nothing paid yet this year.</span>') + "</div>" +
       '<button class="btn" data-act="downloadYear" data-year="' + y + '">Download year summary</button></section>' +
       '<section class="card"><div class="cardhead"><h2>Every bill in ' + y + '</h2><span class="meta">' + yd.count + " payments</span></div>" +
@@ -1170,8 +1223,24 @@
           '<span class="small muted">' + (g.apr ? "Includes " + g.apr + "% interest" + (extra && withX.interest < base.interest ? ", saving about " + money(base.interest - withX.interest) + " in interest" : "") + "." : "Add the interest rate (APR) in Edit for a more exact date.") + (extra ? " Costs about " + money((extra * 12) / 26) + " per paycheck." : "") + "</span></div>" : "") +
         '<div class="headactions"><button class="btn small" data-act="extraPay" data-id="' + esc(g.id) + '">Record extra payment</button></div></section>';
     }).join("");
+    let acct = "";
+    if (savingsOn() || svc().asOf) {
+      const bal = savingsBalance() || 0;
+      const nextPay = paydayAfter(today());
+      const hist = savingsHistory(null, true).slice(0, 6);
+      const yearIn = sum(savingsHistory().filter((x) => x.kind === "split" && x.date.slice(0, 4) === today().slice(0, 4)), "amount");
+      acct = '<section class="card outline"><div class="cardhead"><div class="stack" style="gap:3px"><span class="kicker accent">Savings account</span><h3 style="font-size:16px">' + esc(svc().name || "Savings") + '</h3></div><a class="linkbtn" href="#/settings/paycheck">Change split</a></div>' +
+        '<span class="huge teal-text">' + money(bal) + "</span>" +
+        '<span class="small muted">' + (savingsOn() ? splitLabel() + ", split by your employer" + (nextPay ? " · next deposit " + fmtDow(nextPay) + " (+" + money(splitFor(nextPay)) + ")" : "") : "Paycheck split is off") + (yearIn ? " · " + money(yearIn) + " from paychecks since " + fmtShort(svc().asOf) : "") + "</span>" +
+        '<div class="headactions"><button class="btn small primary" data-act="saveAdj" data-dir="in">Add money</button><button class="btn small" data-act="saveAdj" data-dir="out">Take money out</button><button class="btn small" data-act="saveSetBal">Correct balance</button></div>' +
+        (hist.length ? '<div class="stack" style="gap:6px;border-top:1px solid var(--line);padding-top:12px"><span class="kicker">Recent</span>' + hist.map((x) => '<div class="line"><span>' + fmtShort(x.date) + ' <span class="small muted">· ' + esc(x.note) + "</span>" + (x.kind === "manual" ? ' <button class="linkbtn" data-act="saveDel" data-id="' + esc(x.id) + '" aria-label="Remove this entry">Remove</button>' : "") + '</span><span class="amt ' + (x.amount < 0 ? "warn-text" : "teal-text") + '">' + money(x.amount, { plus: true }) + "</span></div>").join("") + "</div>" : '<span class="small muted">Deposits show here from each payday on.</span>') +
+        "</section>";
+    } else {
+      acct = '<section class="card flat"><div class="line" style="align-items:center"><span class="stack" style="gap:2px"><span class="strong">Part of your paycheck goes to savings?</span><span class="small muted">Set it up and the app tracks your savings balance and takes it out of safe-to-spend.</span></span><a class="btn small" href="#/settings/paycheck">Set up</a></div></section>';
+    }
     const empty = !saves.length && !debts.length;
     return '<div class="pagehead"><h1>Goals</h1><div class="headactions"><button class="btn primary" data-act="newGoal">' + icon("plus", 18, 2.4) + "New goal</button></div></div>" +
+      acct +
       (empty ? '<div class="card empty"><h2>Save for something, or pay something off</h2><p>Savings goals set aside a little from each paycheck. Debt goals track a balance going down as you pay the bill.</p><div class="headactions" style="justify-content:center"><button class="btn primary" data-act="newGoal" data-kind="save">Savings goal</button><button class="btn" data-act="newGoal" data-kind="debt">Debt to pay off</button></div></div>' : "") +
       (saves.length ? '<h2>Saving for</h2><div class="grid-auto">' + saveCards + "</div>" : "") +
       (debts.length ? '<h2>Paying off</h2><div class="grid-auto" style="grid-template-columns:repeat(auto-fit,minmax(320px,1fr))">' + debtCards + "</div>" : "");
@@ -1244,7 +1313,7 @@
     else if (p.freq === "monthly") when = '<label class="field">Payday<select id="' + prefix + 'day1">' + dayOpt(p.day1 || 1) + "</select></label>";
     else when = '<label class="field">Next payday <span class="hint">use the normal day, even if this one moves for a holiday</span><input type="date" id="' + prefix + 'anchor" value="' + esc(p.anchor || "") + '"></label>';
     const shift = p.shift || "before";
-    when += '<label class="field">If payday is a weekend or holiday<select id="' + prefix + 'shift">' + [["before", "Paid the business day before"], ["after", "Paid the business day after"], ["none", "Paid that day anyway"]].map(([k, l]) => '<option value="' + k + '"' + (shift === k ? " selected" : "") + ">" + l + "</option>").join("") + "</select></label>";
+    when += '<label class="field">If payday is a weekend or holiday<select id="' + prefix + 'shift">' + [["before", "Business day before"], ["after", "Business day after"], ["none", "Paid that day anyway"]].map(([k, l]) => '<option value="' + k + '"' + (shift === k ? " selected" : "") + ">" + l + "</option>").join("") + "</select></label>";
     return '<label class="field">Amount per check <span class="hint">after taxes (take-home)</span><span class="money-input"><input type="text" inputmode="decimal" id="' + prefix + 'amount" value="' + (p.amount ? esc(String(p.amount)) : "") + '" placeholder="0.00"></span></label>' +
       '<label class="field">How often<select id="' + prefix + 'freq" data-act-change="payFreq" data-prefix="' + prefix + '">' + Object.entries(FREQS).map(([k, l]) => '<option value="' + k + '"' + (p.freq === k ? " selected" : "") + ">" + l + "</option>").join("") + "</select></label>" + when;
   }
@@ -1259,6 +1328,18 @@
     else if (freq === "semimonthly" && p.day1 === p.day2) err = "Pick two different paydays.";
     return { p, err };
   }
+  function savingsFields() {
+    const sv = UI.svDraft || svc();
+    const on = sv.mode === "amount" || sv.mode === "percent";
+    const bal = savingsBalance();
+    return '<div class="stack" style="gap:12px;border-top:1px solid var(--line);padding-top:14px" id="savings"><h3>Split to savings</h3><span class="small muted">If your employer sends part of each paycheck straight to savings, set it here. It comes out of safe-to-spend, and the app keeps your savings balance up to date. "Amount per check" above should be your total take-home, before the split.</span>' +
+      '<div class="fields" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">' +
+      '<label class="field">Each paycheck<select id="svmode" data-act-change="svMode"><option value="none"' + (!on ? " selected" : "") + '>Nothing goes to savings</option><option value="amount"' + (sv.mode === "amount" ? " selected" : "") + '>A set amount</option><option value="percent"' + (sv.mode === "percent" ? " selected" : "") + ">A percentage</option></select></label>" +
+      (on ? (sv.mode === "percent" ? '<label class="field">Percent of each check<input type="text" inputmode="decimal" id="svvalue" value="' + esc(String(sv.value || "")) + '" placeholder="10"></label>' : '<label class="field">Amount per check<span class="money-input"><input type="text" inputmode="decimal" id="svvalue" value="' + esc(String(sv.value || "")) + '" placeholder="0.00"></span></label>') +
+        '<label class="field">Account name<input type="text" id="svname" maxlength="24" value="' + esc(sv.name || "Savings") + '"></label>' +
+        '<label class="field">Savings balance today <span class="hint">including today\'s deposit if you were paid today</span><span class="money-input"><input type="text" inputmode="decimal" id="svbal" value="' + (bal != null ? bal : "") + '" placeholder="0.00"></span></label>' : "") +
+      "</div></div>";
+  }
   function viewSettings() {
     const s = DB.settings;
     const theme = LS.get("bt_theme") || "auto";
@@ -1271,7 +1352,7 @@
     return '<div class="pagehead"><h1>Settings</h1></div>' +
       '<div class="grid-auto" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr))">' +
       '<section class="card"><h2>Appearance</h2><div class="themes">' + themes + '</div><span class="small muted">Match device follows your phone or computer\'s light/dark setting. This is saved per device.</span></section>' +
-      '<section class="card" id="paycheck"><h2>Paycheck</h2><div class="fields" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))"><label class="field">Your first name <span class="hint">for the greeting</span><input type="text" id="setname" value="' + esc(s.name) + '" maxlength="30"></label>' + payFields(pay, "set") + '</div><div class="error" id="payerr" role="alert"></div><div class="formactions"><span class="small muted" style="margin-right:auto">Got paid a different amount once? Use Edit on that check in Paychecks.</span><button class="btn primary" data-act="savePay">Save paycheck</button></div></section>' +
+      '<section class="card" id="paycheck"><h2>Paycheck</h2><div class="fields" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))"><label class="field">Your first name <span class="hint">for the greeting</span><input type="text" id="setname" value="' + esc(s.name) + '" maxlength="30"></label>' + payFields(pay, "set") + '</div>' + savingsFields() + '<div class="error" id="payerr" role="alert"></div><div class="formactions"><span class="small muted" style="margin-right:auto">Got paid a different amount once? Use Edit on that check in Paychecks.</span><button class="btn primary" data-act="savePay">Save paycheck</button></div></section>' +
       '<section class="card" id="reminders"><h2>Reminders</h2>' +
       sw("payday", "Payday reminders", "Night before payday, 8:00 PM") +
       sw("due", "Bill due reminders", "Uses each bill's own setting") +
@@ -1599,7 +1680,8 @@
       openSheet("Edit paycheck", '<div class="form">' +
         '<div class="fields" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">' +
         '<label class="field">Paid on<input id="ckdate" type="date" value="' + day + '"' + (prev ? ' min="' + addDays(prev, 1) + '"' : "") + (next ? ' max="' + addDays(next, -1) + '"' : "") + '></label>' +
-        '<label class="field">Amount<span class="money-input"><input id="amt" type="text" inputmode="decimal" value="' + checkAmount(day) + '"></span></label></div>' +
+        '<label class="field">Amount<span class="money-input"><input id="amt" type="text" inputmode="decimal" value="' + checkAmount(day) + '"></span></label>' +
+        (savingsOn() ? '<label class="field">To ' + esc(svc().name || "savings") + '<span class="money-input"><input id="cksave" type="text" inputmode="decimal" value="' + splitFor(day) + '"></span></label>' : "") + "</div>" +
         '<span class="small muted">Only changes this one paycheck. Normally it\'s ' + fmtDow(sched) + " for " + money(DB.settings.pay.amount) + ". Bills due from the new date until the next payday move to this check. To change your regular payday, use " + '<a href="#/settings/paycheck">Change pay schedule</a>.</span>' +
         '<div class="error" id="ckerr" role="alert"></div>' +
         '<div class="formactions">' + (c ? '<div class="left"><button class="btn small" data-act="resetCheck" data-day="' + sched + '">Back to normal</button></div>' : "") +
@@ -1615,8 +1697,17 @@
       const prev = paydayOnOrBefore(addDays(day, -1)), next = paydayAfter(day);
       if ((prev && date <= prev) || (next && date >= next)) return err("Pick a date between " + (prev ? fmtShort(prev) : "the last check") + " and " + (next ? fmtShort(next) : "the next check") + ". To shift every payday, use Change pay schedule.");
       const usual = Number(DB.settings.pay.amount) || 0;
-      const rec = { id: sched, amount: amt !== usual ? amt : null, date: date !== sched ? date : null };
-      rec.deleted = rec.amount == null && rec.date == null;
+      let save = null;
+      if ($("#cksave")) {
+        const sv = parseMoney($("#cksave").value || "0");
+        if (!isFinite(sv) || sv < 0 || sv > amt) return err("The savings amount must be between $0 and the paycheck amount.");
+        const prevC = IDX.checks.get(sched);
+        // Compare with what this check would split by default at the new amount.
+        const defAt = svc().mode === "percent" ? r2((amt * (Number(svc().value) || 0)) / 100) : r2(Math.min(Number(svc().value) || 0, amt));
+        if (Math.abs(sv - defAt) >= 0.005) save = sv; else if (prevC && prevC.save != null && Math.abs(prevC.save - sv) >= 0.005) save = sv;
+      }
+      const rec = { id: sched, amount: amt !== usual ? amt : null, date: date !== sched ? date : null, save };
+      rec.deleted = rec.amount == null && rec.date == null && rec.save == null;
       closeSheet(); UI.keepScroll = true;
       upsert("checks", rec);
       commit();
@@ -1659,9 +1750,49 @@
     savePay() {
       const { p, err } = readPayFields("set");
       if (err) { $("#payerr").textContent = err; return; }
+      // Savings split
+      const mode = $("#svmode") ? $("#svmode").value : "none";
+      const cur = svc();
+      let svNext = null;
+      if (mode === "amount" || mode === "percent") {
+        const value = parseMoney($("#svvalue").value);
+        const bal = parseMoney($("#svbal").value || "0");
+        if (!isFinite(value) || value <= 0) { $("#payerr").textContent = mode === "percent" ? "Enter the percent that goes to savings." : "Enter how much goes to savings each paycheck."; return; }
+        if (mode === "percent" && value > 100) { $("#payerr").textContent = "The percent can't be more than 100."; return; }
+        if (mode === "amount" && value > p.amount) { $("#payerr").textContent = "The savings amount is more than the whole paycheck."; return; }
+        if (!isFinite(bal)) { $("#payerr").textContent = "Enter your savings balance (0 is fine)."; return; }
+        const name = ($("#svname").value || "Savings").trim() || "Savings";
+        const nowBal = savingsBalance();
+        if (cur.mode !== mode || Number(cur.value) !== value || nowBal == null || Math.abs(nowBal - bal) >= 0.005) svNext = { mode, value, name, balance: bal };
+        else if (cur.name !== name) { DB.settings.savings = Object.assign({}, cur, { name }); }
+      } else if (cur.mode !== "none" && cur.mode) svNext = { mode: "none", value: 0 };
       DB.settings.pay = p;
       DB.settings.name = $("#setname").value.trim();
-      settingsChanged(); UI.payDraft = null; UI.keepScroll = true; commit(); toast("Paycheck saved");
+      if (svNext) rebaseSavings(svNext);
+      settingsChanged(); UI.payDraft = null; UI.svDraft = null; UI.keepScroll = true; commit(); toast("Paycheck saved");
+    },
+    saveAdj(el) {
+      const out = el.dataset.dir === "out";
+      openSheet(out ? "Take money out of savings" : "Add money to savings", '<div class="form"><div class="fields" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))"><label class="field">Amount<span class="money-input"><input id="amt" type="text" inputmode="decimal" placeholder="0.00"></span></label><label class="field">Date<input id="svdate" type="date" value="' + today() + '" max="' + today() + '"></label></div><label class="field">Note <span class="hint">optional</span><input id="svnote" type="text" maxlength="60" placeholder="' + (out ? "Car repair" : "Birthday money") + '"></label><div class="error" id="amterr" role="alert"></div><div class="formactions"><button class="btn" data-act="closeSheet">Cancel</button><button class="btn primary" data-act="saveAdjOk" data-dir="' + (out ? "out" : "in") + '">Save</button></div></div>');
+    },
+    saveAdjOk(el) {
+      const amt = parseMoney($("#amt").value);
+      if (!isFinite(amt) || amt <= 0) { $("#amterr").textContent = "Enter an amount."; return; }
+      const signed = el.dataset.dir === "out" ? -amt : amt;
+      const date = $("#svdate").value || today();
+      const note = $("#svnote").value.trim();
+      if (!svc().asOf) rebaseSavings({ balance: 0 });
+      closeSheet(); UI.keepScroll = true;
+      undoable((signed < 0 ? "Took " : "Added ") + money(amt) + (signed < 0 ? " out of " : " to ") + (svc().name || "savings"), () => upsert("saves", { id: uid(), date, amount: signed, note, createdAt: Date.now(), deleted: false }));
+    },
+    saveDel(el) { const x = DB.saves.find((v) => v.id === el.dataset.id); if (!x) return; UI.keepScroll = true; undoable("Entry removed", () => { x.deleted = true; touch(x); }); },
+    saveSetBal() {
+      openSheet("Correct savings balance", '<div class="form"><label class="field">Balance right now<span class="money-input"><input id="amt" type="text" inputmode="decimal" value="' + (savingsBalance() || 0) + '"></span></label><span class="small muted">Use this if the app\'s number doesn\'t match your bank. Future paychecks keep adding to it.</span><div class="error" id="amterr" role="alert"></div><div class="formactions"><button class="btn" data-act="closeSheet">Cancel</button><button class="btn primary" data-act="saveSetBalOk">Save</button></div></div>');
+    },
+    saveSetBalOk() {
+      const amt = parseMoney($("#amt").value);
+      if (!isFinite(amt)) { $("#amterr").textContent = "Enter the balance."; return; }
+      closeSheet(); UI.keepScroll = true; rebaseSavings({ balance: amt }); commit(); toast("Savings balance updated");
     },
     downloadIcs() {
       const { text, count } = buildIcs();
@@ -1909,6 +2040,14 @@
     },
   };
   const CHANGE = {
+    svMode(el) {
+      const keep = { name: $("#setname") ? $("#setname").value : "" };
+      UI.payDraft = readPayFields("set").p;
+      UI.svDraft = Object.assign({}, svc(), { mode: el.value, value: el.value === svc().mode ? svc().value : "" });
+      UI.keepScroll = true; render();
+      if ($("#setname")) $("#setname").value = keep.name;
+      const f = $("#svvalue") || $("#svmode"); if (f) f.focus();
+    },
     lockPolicy(el) { LS.set("bt_lock", el.value); saveSession(); toast("Lock setting saved for this device"); },
     payFreq(el) {
       const prefix = el.dataset.prefix;
@@ -2077,7 +2216,7 @@
   window.addEventListener("hashchange", () => {
     if (!DB) return;
     closeSheetQuiet();
-    if (route().name !== "settings") UI.payDraft = null;
+    if (route().name !== "settings") { UI.payDraft = null; UI.svDraft = null; }
     render();
     window.scrollTo(0, 0);
   });

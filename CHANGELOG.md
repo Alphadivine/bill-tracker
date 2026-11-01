@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11 — Savings split from each paycheck (v1.3.0)
+
+- New "Split to savings" in Settings → Paycheck: a set amount or a percentage of each check that your employer sends straight to savings. Switch between amount and percent any time; past deposits keep the rule they had.
+- The split comes out of "safe to spend". Each paycheck card shows a "Savings · split from check" line, and Home explains it ("After $200 to Savings and $X in bills").
+- Savings account card on Goals (and on the Home sidebar on desktop): your balance grows by the split every payday, with the next deposit shown. "Add money", "Take money out" (with a note) and "Correct balance" keep it matching your bank; recent deposits and changes are listed, and a manual entry can be removed.
+- Paychecks → Edit can change the savings amount for a single check (for example, skip it once).
+- The year-end summary notes how much was split to savings.
+- Settings → Paycheck: the "If payday is a weekend or holiday" dropdown is wider with shorter labels, so the text isn't cut off on desktop.
+
 ## 2026-10 — Move a paycheck's date (v1.2.0)
 
 - Paychecks → Edit now changes a single check's date as well as its amount (for example, paid a day early). Bills due from the new date until the next payday move onto that check, and the card shows "Moved from…". "Back to normal" undoes it. Holds and amount changes stay with the check when it moves.

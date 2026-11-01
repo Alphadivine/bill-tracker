@@ -9,6 +9,7 @@ A personal app for keeping track of monthly bills and budgeting around your payc
 - **Home** shows what's **safe to spend** until your next payday, your bills for the month, and what's paid and still owed. Tap the circle to mark a bill paid (with Undo).
 - **Paycheck planner** splits your bills by paycheck (every 2 weeks, weekly, twice a month or monthly), shows what each check covers, and suggests **holding** some money from one check when the next one is heavier. Got paid early or late once? **Edit** that check to move its date or change its amount; **Change pay schedule** updates your regular payday.
 - **Calendar** shows due dates and paydays for the month. Pick a day to see its bills, notes and a link to the pay site.
+- **Savings split**: if part of each paycheck goes straight to savings, set a dollar amount or percentage in Settings → Paycheck. It comes out of safe-to-spend, and a **Savings account** card on Goals keeps your balance up to date each payday. Add money, take money out, or correct the balance any time.
 - **Insights** shows where your money goes by category, your monthly trend, every **subscription** with its yearly cost, **price changes** when a bill goes up, and a **year-end summary** you can download.
 - **Goals** tracks savings goals (a set amount per paycheck, with an on-track date) and debts (the balance drops when you mark the linked bill paid). A **what-if** shows how much sooner you'd be debt-free paying a little extra.
 - **Categories and filter**: a bill can sit in more than one category (like a house loan under Housing and Debt). Tap a category at the top of Home or Calendar to see just those bills.
@@ -40,4 +41,4 @@ The sync Worker lives in the `Worker` folder of the bundle, not on GitHub Pages.
 
 ---
 
-Last updated: October 2026 (v1.2.0)
+Last updated: November 2026 (v1.3.0)
